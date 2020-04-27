@@ -1,1 +1,1 @@
-# php-js-syntax-templating
+# simple-templating
