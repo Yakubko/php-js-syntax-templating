@@ -198,7 +198,7 @@ class Replace implements \JsonSerializable {
 			'explode', 'implode', 'array_column',
 
 			// String
-			'trim', 'strlen', 'substr', 'strpos', 'strstr', 'sprintf', 'ucfirst', 'ucwords', 'strtoupper', 'strtolower', 'strip_tags', 'str_replace', 'urlencode'
+			'trim', 'strlen', 'substr', 'strpos', 'strstr', 'sprintf', 'ucfirst', 'ucwords', 'strtoupper', 'strtolower', 'strip_tags', 'str_replace', 'urlencode', 'rawurlencode'
 		];
 
 		if (in_array($fnName, $allowedFunctionNames)) {
