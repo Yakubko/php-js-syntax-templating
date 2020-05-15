@@ -6,7 +6,7 @@ namespace Yakub\SimpleTemplating;
  *
  * @author yakub
  */
-class Replace implements \JsonSerializable {
+final class Replace implements \JsonSerializable {
 
 	const USE_URLENCODE = 1;
 
@@ -49,7 +49,7 @@ class Replace implements \JsonSerializable {
 	 * @param integer $flags
 	 * @return string|NULL
 	 */
-	public static function compile(string $template, $scope, int $flags = 0):? self {
+	public static function compile(string $template, array $scope = [], int $flags = 0):? self {
 		$templateObject = new self($template, $scope, $flags);
 
 		$templateObject->process();
@@ -63,23 +63,6 @@ class Replace implements \JsonSerializable {
 
 	public function jsonSerialize() {
 		return (string) $this;
-	}
-
-	/**
-	 * Run after changes in code
-	 *
-	 * @return boolean
-	 */
-	public static function testCompile() {
-		$testCase = [
-			'strings' => [
-				'template' => "{{string}}, {{string[4]}}, {{integer}}, {{array}}, {{array[1]}}, {{fn.explode(',', valueForExplode)[1]}}, [{{fn.implode(', ', array)}}], {{object.name}}, {{object.data[0]}}, {{object['string']}}, {{object[string]}}, {{fn.strtoupper(object[string])}}, {{fn.date('H:i:s')}}",
-				'output' => 'stringValue, n, 1, , 2, Hi, [1, 2], objectName, objectData, success, successData, SUCCESSDATA, '.date('H:i:s')
-			],
-			'data' => ['string' => 'stringValue', 'integer' => 1, 'valueForExplode' => 'Hello,Hi', 'array' => [1, 2], 'object' => ['name' => 'objectName', 'data' => ['objectData'], 'string' => 'success', 'stringValue' => 'successData']]
-		];
-
-		return static::compile($testCase['strings']['template'], $testCase['data']) == $testCase['strings']['output'];
 	}
 
 	/**
@@ -109,7 +92,8 @@ class Replace implements \JsonSerializable {
 			if ('{{'.$match[1].'}}' == trim($this->template)) { $this->onlyOneParamValue = $replacedValue; }
 
 			// Check wrong string representation
-			if (! is_string($replacedValue) && (string) $replacedValue != $replacedValue) {
+			if (! ($replacedValue === null || is_scalar($replacedValue) || (is_object($replacedValue) && method_exists($replacedValue, '__toString')))
+			|| (string) $replacedValue != $replacedValue) {
 				$replacedValue = '';
 			}
 
@@ -122,108 +106,157 @@ class Replace implements \JsonSerializable {
 	}
 
 	/**
+	 * Root parser. Run conditions -> functions -> arithmetical operators -> replace variable
+	 *
+	 * @param string $string
+	 * @return mixed|NULL
+	 */
+	private function replaceVariable(string $string) {
+		return $this->runFunctions($string);
+	}
+
+	/**
 	 * Search for function or variable and replace it with value from scope.
 	 * If value doesn't exist in scope then relaced value is empty string
 	 *
 	 * @param string $string
 	 * @return mixed|NULL
 	 */
-	private function replaceVariable(string $string) {
+	private function runFunctions(string $string) {
 		$ret = null;
 
-		// Try find function
+		// Try find functions
 		$subMatches = [];
-		preg_match_all("/fn\.([^(]*)\((([^()]|(?R))*)\)/", $string, $subMatches, PREG_SET_ORDER);
-		$subMatches = $subMatches[0] ? $subMatches[0] : [];
+		preg_match_all("/fn\.([^(]+)(\(((?>[^()]++|(?2))*)\))/", $string, $subMatches, PREG_SET_ORDER);
 
 		// Is function
-		if ($subMatches[1]) {
-			// Parse function params
-			$params = [];
-			foreach ($this->parseFunctionParams($subMatches[2]) as $fnParam) {
-				$fnParam = $this->replaceVariable($fnParam);
-				// If some param return null stop executing function
-				if (is_null($fnParam)) { $params = null; break; }
+		if (count($subMatches) > 0 ) {
+			$tmpScopeNames = [];
 
-				$params[] = $fnParam;
+			foreach ($subMatches as $subMatch) {
+				// Parse function params
+				$params = [];
+				if ($subMatch[3]) {
+					foreach ($this->parseFunctionParams($subMatch[3]) as $fnParam) {
+						$fnParam = $this->replaceVariable($fnParam);
+						// If some param return null stop executing function
+						if (is_null($fnParam)) { $params = null; break; }
+
+						$params[] = $fnParam;
+					}
+				}
+
+				if (is_array($params)) {
+					// Execute function
+					$ret = $this->evalFunction($subMatch[1], ...$params);
+				}
+
+				$pos = strpos($string, $subMatch[0]);
+				if ($pos !== false) {
+					$tmpName = str_replace('.', '_', uniqid('temporary_', true));
+					$tmpScopeNames[] = $tmpName;
+					$this->scope[$tmpName] = $ret;
+
+					$string = substr_replace($string, $tmpName, $pos, strlen($subMatch[0]));
+				}
 			}
 
-			if (is_array($params)) {
-				// Execute function
-				$ret = $this->runFunction($subMatches[1], ...$params);
-			}
+			$ret = $this->runArithmeticOperators($string);
 
-			if ($ret && substr($string, 0, strlen($subMatches[0])) === $subMatches[0] && strlen($string) > strlen($subMatches[0])) {
-				$tmpName = str_replace('.', '_', uniqid('temporary_', true));
-				$this->scope[$tmpName] = $ret;
-				$ret = $this->replaceVarFromScope($tmpName.substr($string, strlen($subMatches[0])));
-
-				unset ($this->scope[$tmpName]); $this->usedWords = array_diff($this->usedWords, [$tmpName.substr($string, strlen($subMatches[0]))]);
-			}
+			// Clean scope, usedWords
+			$this->scope = array_diff_key($this->scope, array_flip($tmpScopeNames));
+			$this->usedWords = array_filter($this->usedWords, function ($word) use ($tmpScopeNames) {
+				foreach ($tmpScopeNames as $tmpScopeName) {
+					if (substr($word, 0, strlen($tmpScopeName)) === $tmpScopeName) { return false; }
+				}
+				return true;
+			});
 		} else {
-			// String is static value
-			if ($string[0] === "'" && $string[strlen($string) - 1] === "'") {
-				$ret = substr($string, 1, -1);
-
-			} else if (filter_var($string, FILTER_VALIDATE_INT) !== false || filter_var($string, FILTER_VALIDATE_FLOAT) !== false) {
-				$ret = $string;
-
-			// String is path to value from scope
-			} else {
-				$ret = $this->replaceVarFromScope($string);
-			}
+			// Run arithmetic operators on string
+			$ret = $this->runArithmeticOperators($string);
 		}
 
 		return $ret;
 	}
 
-	/**
-	 * Execute function if fnName is in whitelist
-	 *
-	 * @param string $fnName
-	 * @param mixed ...$params
-	 * @return mixed|NULL
-	 */
-	private function runFunction(string $fnName, ...$params) {
-		$ret = null;
-		// Allowed functions
-		$allowedFunctionNames = [
-			// Math
-			'round', 'rand',
-
-			// Date time
-			'time', 'date', 'strtotime', 'strtodate',
-
-			// Array
-			'explode', 'implode', 'array_column',
-
-			// String
-			'trim', 'strlen', 'substr', 'strpos', 'strstr', 'sprintf', 'ucfirst', 'ucwords', 'strtoupper', 'strtolower', 'strip_tags', 'str_replace', 'urlencode', 'rawurlencode'
-		];
-
-		if (in_array($fnName, $allowedFunctionNames)) {
-			try {
-				switch ($fnName) {
-					case 'strtodate':
-						$ret = date($params[1] ?: DATE_FORMAT, strtotime($params[0]));
-						break;
-
-					case 'strlen':
-					case 'substr':
-					case 'strpos':
-					case 'strstr':
-					case 'strtolower':
-					case 'strtoupper':
-						$fnName = 'mb_'.$fnName;
-
-					default:
-						$ret = $fnName(...$params);
-						break;
-				}
-			} catch (\Exception $e) { $ret = null; }
+	private function runArithmeticOperators($string) {
+		// String is static value
+		if ($string[0] === "'" && $string[strlen($string) - 1] === "'") {
+			return substr($string, 1, -1);
 		}
 
-		return $ret;
+		$value = 0;
+		preg_match_all("/\((([^()]|(?R))*)\)/", $string, $subMatches, PREG_SET_ORDER);
+
+		if (count($subMatches) > 0) {
+			foreach ($subMatches as $subMatch) {
+				$bracketsSum = $this->runArithmeticOperators($subMatch[1]);
+
+				$pos = strpos($string, $subMatch[0]);
+				if ($pos !== false) {
+					$string = substr_replace($string, $bracketsSum, $pos, strlen($subMatch[0]));
+				}
+			}
+		}
+
+		$operatorPriority = ['*', '/', '+', '-'];
+		$fnExecOperator = function ($string, $operatorPosition = null) use (& $fnExecOperator, $operatorPriority) {
+			if (is_null($operatorPosition)) {
+				preg_match_all("/[^(\+\-)]+(\*|\/)[^(\+\-)]+/", $string, $subMatches, PREG_SET_ORDER);
+
+				if (count($subMatches) > 0) {
+					foreach ($subMatches as $subMatch) {
+						$subValue = $fnExecOperator(str_replace(' ', '', $subMatch[0]), 0);
+
+						$pos = strpos($string, $subMatch[0]);
+						if ($pos !== false) {
+							$string = substr_replace($string, round($subValue, 4), $pos, strlen($subMatch[0]));
+						}
+					}
+				}
+
+				return $fnExecOperator(preg_match_all("/(\+|\-)/", $string) ? str_replace(' ', '', $string) : $string, 2);
+			} else if (array_key_exists($operatorPosition, $operatorPriority)) {
+				$subValue = explode($operatorPriority[$operatorPosition], $string);
+				$value = $fnExecOperator($subValue[0], $operatorPosition+1);
+				if (($countSubValue = count($subValue)) > 1) {
+					$fnEvalOperator = function ($a, $b, $operator) {
+						$ret = null;
+						$a = is_string($a) ? str_replace(',', '.', $a) : $a;
+						$b = is_string($b) ? str_replace(',', '.', $b) : $b;
+
+						switch ($operator) {
+							case '*': $ret = $a * $b; break;
+							case '/': $ret = $a / $b; break;
+							case '+': $ret = $a + $b; break;
+							case '-': $ret = $a - $b; break;
+						}
+
+						return $ret;
+					};
+
+					$i = 1;
+					do {
+						$value = $fnEvalOperator($value, $fnExecOperator($subValue[$i], $operatorPosition+1), $operatorPriority[$operatorPosition]);
+					} while (++$i < $countSubValue);
+				}
+
+				return $value;
+			} else {
+				// Is intenger or float
+				if (filter_var($string, FILTER_VALIDATE_INT) !== false || filter_var($string, FILTER_VALIDATE_FLOAT) !== false || filter_var($string, FILTER_VALIDATE_FLOAT,  ['options' => ['decimal' => ',']]) !== false) {
+					$ret = $string;
+
+				// String is path to value from scope
+				} else {
+					$ret = $this->replaceVarFromScope(trim($string));
+				}
+
+				return $ret;
+			}
+		};
+
+		return $fnExecOperator($string);
 	}
 
 	/**
@@ -242,14 +275,15 @@ class Replace implements \JsonSerializable {
 
 		// Function for actualize scope, buffer and output value
 		$actualizeScope = function (& $scope, & $buffer, & $output, $string) {
-			if ((is_array($scope) && $return = array_key_exists($buffer, $scope)) || (is_string($scope) && $scope[$buffer])) {
+			$ret = null;
+			if ((is_array($scope) && $ret = array_key_exists($buffer, $scope)) || (is_string($scope) && substr($scope, $buffer, 1))) {
 				$scope = $scope[$buffer];
 
 				if (! $string) { $output = $scope; }
-				else { $buffer = ''; }
+				$buffer = '';
 			}
 
-			return $return;
+			return $ret;
 		};
 
 		// Walk char by char
@@ -293,8 +327,14 @@ class Replace implements \JsonSerializable {
 		}
 
 		// Set output value
-		if ($buffer && array_key_exists($buffer, $scope)) {
-			$ret = $scope[$buffer];
+		if ($buffer) {
+			$scope = is_array($scope) ? $scope : (string) $scope;
+
+			if (is_string($scope)) {
+				$ret = substr($scope, $buffer, 1);
+			} else if (is_array($scope) && array_key_exists($buffer, $scope)) {
+				$ret = $scope[$buffer];
+			}
 		}
 
 		return $ret;
@@ -329,6 +369,10 @@ class Replace implements \JsonSerializable {
 					$depth++;
 					break;
 
+				case ')':
+					$depth--;
+					break;
+
 				case ',':
 					// If $depth == true we are nested argument
 					if (! $depth) {
@@ -345,15 +389,6 @@ class Replace implements \JsonSerializable {
 					if (! $depth) { continue 2; }
 					break;
 
-				case ')':
-					if ($depth) { $depth--; }
-					else {
-						// Arguments is complete
-						$ret[] = $buffer.$string[$i];
-						$buffer = '';
-						continue 2;
-					}
-					break;
 			}
 
 			// Fill buffer
@@ -361,8 +396,57 @@ class Replace implements \JsonSerializable {
 		}
 
 		// Add last argument
-		if ($buffer) {
+		if ($buffer || $buffer === '0') {
 			$ret[] = $buffer;
+		}
+
+		return $ret;
+	}
+
+	/**
+	 * Execute function if fnName is in whitelist
+	 *
+	 * @param string $fnName
+	 * @param mixed ...$params
+	 * @return mixed|NULL
+	 */
+	private function evalFunction(string $fnName, ...$params) {
+		$ret = null;
+		// Allowed functions
+		$allowedFunctionNames = [
+			// Math
+			'round', 'rand',
+
+			// Date time
+			'time', 'date', 'strtotime', 'strtodate',
+
+			// Array
+			'explode', 'implode', 'array_column',
+
+			// String
+			'trim', 'strlen', 'substr', 'strpos', 'strstr', 'sprintf', 'ucfirst', 'ucwords', 'strtoupper', 'strtolower', 'strip_tags', 'str_replace', 'urlencode', 'rawurlencode'
+		];
+
+		if (in_array($fnName, $allowedFunctionNames)) {
+			try {
+				switch ($fnName) {
+					case 'strtodate':
+						$ret = date($params[1] ?? 'Y-m-d H:i:s', strtotime($params[0]));
+						break;
+
+					case 'strlen':
+					case 'substr':
+					case 'strpos':
+					case 'strstr':
+					case 'strtolower':
+					case 'strtoupper':
+						$fnName = 'mb_'.$fnName;
+
+					default:
+						$ret = $fnName(...$params);
+						break;
+				}
+			} catch (\Exception $e) { $ret = null; }
 		}
 
 		return $ret;
