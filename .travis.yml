@@ -1,0 +1,22 @@
+language: php
+php:
+    - 7.3
+
+install:
+    - curl -s http://getcomposer.org/installer | php
+    - php composer.phar install --no-interaction
+
+# Testing the app (see phpunit.xml) for configs, generating Code Coverage report
+script:
+    - mkdir -p build/logs
+    - php vendor/bin/phpunit -c phpunit.xml.dist
+
+# Submit coverage report
+after_success:
+    - travis_retry php vendor/bin/php-coveralls
+
+# Monitor only these branches
+branches:
+    only:
+        - master
+        - dev
