@@ -168,14 +168,14 @@ final class ReplaceTest extends TestCase {
         );
     }
 
-    public function testCompileNumberFunctionRoundRand(): void {
+    public function testCompileNumberFunctionRoundRandPowFloorAbs(): void {
         $compiled = (string) Replace::compile(
-            'Hi ({{number}}), {{fn.round(number)}}, {{fn.round(number2)}}, {{fn.rand(2,2)}}',
+            'Hi ({{number}}), {{fn.round(number)}}, {{fn.round(number2)}}, {{fn.rand(2,2)}}, {{fn.pow(2,3)}}, {{fn.floor(2.9)}}, {{fn.abs(number)}}',
             ['number' => 10.4, 'number2' => 10.6]
         );
 
         $this->assertEquals(
-            'Hi (10.4), 10, 11, 2',
+            'Hi (10.4), 10, 11, 2, 8, 2, 10.4',
             $compiled
         );
     }

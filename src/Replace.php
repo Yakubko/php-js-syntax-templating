@@ -415,7 +415,7 @@ final class Replace implements \JsonSerializable {
 		// Allowed functions
 		$allowedFunctionNames = [
 			// Math
-			'round', 'rand',
+			'round', 'rand', 'pow', 'floor', 'abs',
 
 			// Date time
 			'time', 'date', 'strtotime', 'strtodate',
