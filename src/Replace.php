@@ -106,157 +106,263 @@ final class Replace implements \JsonSerializable {
 	}
 
 	/**
-	 * Root parser. Run conditions -> functions -> arithmetical operators -> replace variable
+	 * Root parser. Run conditions -> logical operators -> comparison operators -> arithmetical operators -> function -> replace variable
 	 *
 	 * @param string $string
 	 * @return mixed|NULL
 	 */
 	private function replaceVariable(string $string) {
-		return $this->runFunctions($string);
+		if (! is_string($string)) { return $string; }
+		$ret = trim($string);
+
+		// Remove unnecessary brackets
+		while (preg_match('/^(\(((?>[^()]++|(?1))*)\))$/', $ret)) {
+			$ret = substr($ret, 1, -1);
+		}
+
+		// Is string condition
+		$condition = $this->evalMagicSplit($ret, ['?', ':']);
+		if (count($condition) == 3) {
+			$result = $this->replaceVariable($condition[0]);
+			if (is_null($result)) { return null; }
+			return (!! $result) ? $this->replaceVariable($condition[1]) : $this->replaceVariable($condition[2]);
+		} else if (count($condition) > 1) {
+			return null;
+		}
+
+		// Find logical operators
+		$logicOperators = array_filter($this->evalMagicSplit($ret, ['&&', '||'], true), function ($value) {
+			return trim($value) === '' ? false : true;
+		});
+		if ((count($logicOperators) - 1) !== 0 && ((count($logicOperators) - 1) % 2) === 0) {
+			$a = (bool) $this->replaceVariable(array_shift($logicOperators));
+			$operator = array_shift($logicOperators);
+
+			// Continue with parsing next logical operators or return current result
+			return (($operator == '&&' && $a) || ($operator == '||' && ! $a)) ? $this->replaceVariable(implode('', $logicOperators)) : $a;
+		} else if (count($logicOperators) > 1) {
+			return null;
+		}
+
+		// Find comparison operators
+		$comparisonOperators = array_filter($this->evalMagicSplit($ret, ['===', '!==', '==', '!=', '<>', '>=', '<=', '>', '<'], true), function ($value) {
+			return trim($value) === '' ? false : true;
+		});
+		if (count($comparisonOperators) === 3) {
+			return $this->runComparisonOperators($comparisonOperators);
+		} else if (count($comparisonOperators) > 1) {
+			return null;
+		}
+
+		// Find arithmetic operators
+		$arithmeticOperators = $this->evalMagicSplit($ret, ['*', '/', '+', '-'], true);
+		if ((count($arithmeticOperators) - 1) && ((count($arithmeticOperators) - 1) % 2) === 0) {
+			return $this->runArithmeticOperators($arithmeticOperators);
+		}
+
+		// Find function
+		$subMatch = [];
+		if (preg_match("/fn\.([^(]+)(\(((?>[^()]++|(?2))*)\))/", $ret, $subMatch)) {
+			return $this->runFunction($string, $subMatch);
+		}
+
+		// Is intenger or float
+		if (filter_var(str_replace(' ', '', $ret), FILTER_VALIDATE_INT) !== false || filter_var(str_replace(' ', '', $ret), FILTER_VALIDATE_FLOAT) !== false || filter_var(str_replace(' ', '', $ret), FILTER_VALIDATE_FLOAT,  ['options' => ['decimal' => ',']]) !== false) {
+			return $ret;
+		}
+
+		// Is static string
+		else if (is_string($ret) && trim($ret) && in_array(trim($ret)[0], ['"', "'"])) {
+			$startingWith = trim($ret)[0];
+			return trim(str_replace('\\'.$startingWith, $startingWith, $ret), $startingWith);
+		}
+
+		// If is used negation count how many times negate
+		$ret = str_replace(' ', '', $ret);
+		$negateCount = 0;
+		do {
+			if ($ret[0] == '!') {
+				$negateCount++; $ret = substr($ret, 1);
+			} else { break; }
+		} while (true);
+
+		// String is path to value from scope
+		$ret = $this->runScopeValue($ret);
+		// Run negation
+		for ($i = 0; $i < $negateCount; $i++) { $ret = ! $ret; }
+
+		return $ret;
 	}
 
 	/**
-	 * Search for function or variable and replace it with value from scope.
-	 * If value doesn't exist in scope then relaced value is empty string
+	 * Run comparison operators form array
 	 *
-	 * @param string $string
-	 * @return mixed|NULL
+	 * @param array $compare	- Array with 3 keys: 0 -> value A, 1 -> operator, 2 -> value B
 	 */
-	private function runFunctions(string $string) {
+	private function runComparisonOperators(array $compare) {
 		$ret = null;
+		// Eval values A and B
+		$a = $this->replaceVariable($compare[0]);
+		$b = $this->replaceVariable($compare[2]);
+		$operator = $compare[1];
 
-		// Try find functions
-		$subMatches = [];
-		preg_match_all("/fn\.([^(]+)(\(((?>[^()]++|(?2))*)\))/", $string, $subMatches, PREG_SET_ORDER);
-
-		// Is function
-		if (count($subMatches) > 0 ) {
-			$tmpScopeNames = [];
-
-			foreach ($subMatches as $subMatch) {
-				// Parse function params
-				$params = [];
-				if ($subMatch[3]) {
-					foreach ($this->parseFunctionParams($subMatch[3]) as $fnParam) {
-						$fnParam = $this->replaceVariable($fnParam);
-						// If some param return null stop executing function
-						if (is_null($fnParam)) { $params = null; break; }
-
-						$params[] = $fnParam;
-					}
-				}
-
-				if (is_array($params)) {
-					// Execute function
-					$ret = $this->evalFunction($subMatch[1], ...$params);
-				}
-
-				$pos = strpos($string, $subMatch[0]);
-				if ($pos !== false) {
-					$tmpName = str_replace('.', '_', uniqid('temporary_', true));
-					$tmpScopeNames[] = $tmpName;
-					$this->scope[$tmpName] = $ret;
-
-					$string = substr_replace($string, $tmpName, $pos, strlen($subMatch[0]));
-				}
-			}
-
-			$ret = $this->runArithmeticOperators($string);
-
-			// Clean scope, usedWords
-			$this->scope = array_diff_key($this->scope, array_flip($tmpScopeNames));
-			$this->usedWords = array_filter($this->usedWords, function ($word) use ($tmpScopeNames) {
-				foreach ($tmpScopeNames as $tmpScopeName) {
-					if (substr($word, 0, strlen($tmpScopeName)) === $tmpScopeName) { return false; }
-				}
-				return true;
-			});
-		} else {
-			// Run arithmetic operators on string
-			$ret = $this->runArithmeticOperators($string);
+		$a = is_string($a) ? str_replace(' ', '', $a) : $a;
+		$b = is_string($b) ? str_replace(' ', '', $b) : $b;
+		switch ($operator) {
+			case '==': $ret = $a == $b; break;
+			case '===': $ret = $a === $b; break;
+			case '!=': $ret = $a != $b; break;
+			case '!==': $ret = $a !== $b; break;
+			case '<>': $ret = $a <> $b; break;
+			case '>': $ret = $a > $b; break;
+			case '>=': $ret = $a >= $b; break;
+			case '<': $ret = $a < $b; break;
+			case '<=': $ret = $a <= $b; break;
 		}
 
 		return $ret;
 	}
 
-	private function runArithmeticOperators($string) {
-		// String is static value
-		if ($string[0] === "'" && $string[strlen($string) - 1] === "'") {
-			return substr($string, 1, -1);
-		}
-
-		$value = 0;
-		preg_match_all("/\((([^()]|(?R))*)\)/", $string, $subMatches, PREG_SET_ORDER);
-
-		if (count($subMatches) > 0) {
-			foreach ($subMatches as $subMatch) {
-				$bracketsSum = $this->runArithmeticOperators($subMatch[1]);
-
-				$pos = strpos($string, $subMatch[0]);
-				if ($pos !== false) {
-					$string = substr_replace($string, $bracketsSum, $pos, strlen($subMatch[0]));
-				}
+	/**
+	 * Calculate values from array
+	 *
+	 * @param array $calculate	- Array keys: 0 -> value A, 1 -> operator, 2 -> value B, 3 -> operator, 4 -> value C, ...
+	 */
+	private function runArithmeticOperators(array $calculate) {
+		$calculateCount = count($calculate);
+		// Fix minus values
+		for ($i = 1; $i < $calculateCount; $i+= 2) {
+			$operator = trim($calculate[$i]);
+			$a = trim($calculate[$i - 1]);
+			$b = trim($calculate[$i + 1]);
+			if (! $a && $a !== '0' && $operator == '-') {
+				array_splice($calculate, $i - 1, 3, $operator.$b);
+				$calculateCount-= 2;
 			}
 		}
+		// It was only minus value
+		if (count($calculate) === 1) {
+			return $calculate[0];
+		}
 
-		$operatorPriority = ['*', '/', '+', '-'];
-		$fnExecOperator = function ($string, $operatorPosition = null) use (& $fnExecOperator, $operatorPriority) {
-			if (is_null($operatorPosition)) {
-				preg_match_all("/[^(\+\-)]+(\*|\/)[^(\+\-)]+/", $string, $subMatches, PREG_SET_ORDER);
+		// Define priority operators. At first eval * and / and then + and -
+		$execute = ['position' => 1, 'level' => 0, 'operators' => [['*', '/'], ['+', '-']]];
+		$fnEvalOperator = function ($a, $b, $operator) {
+			$ret = null;
+			// Remove spaces and replace "," for "." if string is value with decimals separated by ","
+			$a = is_string($a) ? str_replace([' ', ','], ['', '.'], $a) : $a;
+			$b = is_string($b) ? str_replace([' ', ','], ['', '.'], $b) : $b;
 
-				if (count($subMatches) > 0) {
-					foreach ($subMatches as $subMatch) {
-						$subValue = $fnExecOperator(str_replace(' ', '', $subMatch[0]), 0);
-
-						$pos = strpos($string, $subMatch[0]);
-						if ($pos !== false) {
-							$string = substr_replace($string, round($subValue, 4), $pos, strlen($subMatch[0]));
-						}
-					}
-				}
-
-				return $fnExecOperator(preg_match_all("/(\+|\-)/", $string) ? str_replace(' ', '', $string) : $string, 2);
-			} else if (array_key_exists($operatorPosition, $operatorPriority)) {
-				$subValue = explode($operatorPriority[$operatorPosition], $string);
-				$value = $fnExecOperator($subValue[0], $operatorPosition+1);
-				if (($countSubValue = count($subValue)) > 1) {
-					$fnEvalOperator = function ($a, $b, $operator) {
-						$ret = null;
-						$a = is_string($a) ? str_replace(',', '.', $a) : $a;
-						$b = is_string($b) ? str_replace(',', '.', $b) : $b;
-
-						switch ($operator) {
-							case '*': $ret = $a * $b; break;
-							case '/': $ret = $a / $b; break;
-							case '+': $ret = $a + $b; break;
-							case '-': $ret = $a - $b; break;
-						}
-
-						return $ret;
-					};
-
-					$i = 1;
-					do {
-						$value = $fnEvalOperator($value, $fnExecOperator($subValue[$i], $operatorPosition+1), $operatorPriority[$operatorPosition]);
-					} while (++$i < $countSubValue);
-				}
-
-				return $value;
-			} else {
-				// Is intenger or float
-				if (filter_var($string, FILTER_VALIDATE_INT) !== false || filter_var($string, FILTER_VALIDATE_FLOAT) !== false || filter_var($string, FILTER_VALIDATE_FLOAT,  ['options' => ['decimal' => ',']]) !== false) {
-					$ret = $string;
-
-				// String is path to value from scope
-				} else {
-					$ret = $this->replaceVarFromScope(trim($string));
-				}
-
-				return $ret;
+			switch ($operator) {
+				case '*': $ret = $a * $b; break;
+				case '/': $ret = $a / $b; break;
+				case '+': $ret = $a + $b; break;
+				case '-': $ret = $a - $b; break;
 			}
+
+			return $ret;
 		};
 
-		return $fnExecOperator($string);
+		do {
+			// If operator is in current operators group then eval
+			if (array_key_exists($execute['position'], $calculate) && in_array($calculate[$execute['position']], $execute['operators'][$execute['level']])) {
+				$a = trim($this->replaceVariable($calculate[$execute['position'] - 1]));
+				$b = trim($this->replaceVariable($calculate[$execute['position'] + 1]));
+				$operator = trim($calculate[$execute['position']]);
+
+				// Replace group with result
+				array_splice($calculate, $execute['position'] - 1, 3, $fnEvalOperator($a, $b, $operator));
+
+				$execute['position']-= 2;
+			}
+
+			// Jump to next group for eval
+			$execute['position']+= 2;
+			if (! array_key_exists($execute['position'], $calculate)) {
+				// Move to next group of operators and start from begin
+				if (array_key_exists(++$execute['level'], $execute['operators'])) {
+					$execute['position'] = 1;
+				} else { break; }
+			}
+		} while (true);
+
+		return $calculate[0];
+	}
+
+	/**
+	 * Run function from string
+	 *
+	 * @param string $string	- Whole syntax for operator. Used for detect direct access after eval. E.g.: fn.explode('', val)[0]
+	 * @param array $subMatch	- Array keys: 0 -> whole match, 1 -> function name, 2 -> ignored, 3 -> function params string E.g.: "'', val"
+	 */
+	private function runFunction(string $string, array $subMatch) {
+		$ret = null;
+		$params = [];
+		foreach ($this->evalMagicSplit($subMatch[3], [',']) as $fnParam) {
+			$fnParam = $this->replaceVariable($fnParam);
+			// If some param return null stop executing function
+			if (is_null($fnParam)) { $params = null; break; }
+
+			$params[] = $fnParam;
+		}
+
+		// Execute function
+		if (is_array($params)) {
+			// Allowed functions
+			$allowedFunctionNames = [
+				// Math
+				'round', 'rand', 'pow', 'floor', 'abs',
+
+				// Date time
+				'time', 'date', 'gmdate', 'strtotime', 'strtodate',
+
+				// Array
+				'explode', 'implode', 'array_column',
+
+				// String
+				'trim', 'strlen', 'substr', 'strpos', 'strstr', 'sprintf', 'ucfirst', 'ucwords', 'strtoupper', 'strtolower', 'strip_tags', 'str_replace', 'urlencode', 'rawurlencode'
+			];
+
+			if (in_array($subMatch[1], $allowedFunctionNames)) {
+				try {
+					switch ($subMatch[1]) {
+						case 'strtodate':
+							$ret = date($params[1] ?? 'Y-m-d H:i:s', strtotime($params[0]));
+							break;
+
+						case 'strlen':
+						case 'substr':
+						case 'strpos':
+						case 'strstr':
+						case 'strtolower':
+						case 'strtoupper':
+							$subMatch[1] = 'mb_'.$subMatch[1];
+
+						default:
+							$ret = $subMatch[1](...$params);
+							break;
+					}
+				} catch (\Exception $e) { $ret = null; }
+			}
+		}
+
+		// If there is direct access to function return
+		if (trim($string) != $subMatch[0]) {
+			$tmpName = str_replace('.', '_', uniqid('temporary_', true));
+			$this->scope[$tmpName] = $ret;
+
+			// Replace function string for tmp variable
+			$tmpString = str_replace($subMatch[0], $tmpName, $string);
+
+			// Run with tmp variable name and then clean scope and usedWords
+			$ret = $this->replaceVariable($tmpString);
+			unset($this->scope[$tmpName]);
+			$this->usedWords = array_filter($this->usedWords, function ($word) use ($tmpName) {
+				return (substr($word, 0, strlen($tmpName)) === $tmpName) ? false : true;
+			});
+		}
+
+		return $ret;
 	}
 
 	/**
@@ -265,7 +371,7 @@ final class Replace implements \JsonSerializable {
 	 * @param string $string	- Format: ticket.activities[2]['statuses'][0][statuses.item.nameKey]
 	 * @return NULL|mixed
 	 */
-	private function replaceVarFromScope(string $string) {
+	private function runScopeValue(string $string) {
 		$this->usedWords = array_unique(array_merge($this->usedWords, [$string]));
 
 		$ret = null;
@@ -313,7 +419,7 @@ final class Replace implements \JsonSerializable {
 
 					// If not integer run recursively
 					} else if ((string) (int) $buffer !== $buffer) {
-						$buffer = $this->replaceVarFromScope($buffer);
+						$buffer = $this->replaceVariable($buffer);
 					}
 
 					if (! $actualizeScope($scope, $buffer, $ret, isset($string[$i + 1]))) { break 2; }
@@ -341,114 +447,59 @@ final class Replace implements \JsonSerializable {
 	}
 
 	/**
-	 * Parse arguments for function from string
+	 * Split string but ignoring splitter in brackets or question marks
 	 *
-	 * @param string $string	- Format: ticket.name, fn.date('H:i:s', fn.time()), fn.strtolower('HI'), fn.inplode(',', array)
-	 * @return array|NULL
+	 * @param string	$string			- String to split ignoring split char in brackets or question marks
+	 * @param array		$split			- Array of chars for split. Can contains more than one char. E.g.: "&&" - Split only when in string are two &
+	 * @param bool		$keepSplitter	- Add to return array splitter character
 	 */
-	private function parseFunctionParams(string $string):? array {
-		$ret = null;
-		$depth = 0;
-		$buffer = '';
-		$strLength = strlen($string);
+	private function evalMagicSplit(string $string, array $split, bool $keepSplitter = false) {
+		$depth = 0; $stack = []; $buffer = ''; $length = strlen($string);
 
-		// Walk char by char
-		for ($i = 0; $i < $strLength; $i++) {
-			switch ($string[$i]) {
-				case "'":
-					$run = true;
+		for ($i = 0; $i < $length; $i++) {
+			$char = $string[$i];
+
+			switch (true) {
+				// Set depth
+				case ($char == '('): $depth++; break;
+				case ($char == ')'): $depth--; break;
+
+				// Is in question mark
+				case $char == "'":
+				case $char == '"':
 					do {
 						$buffer.= $string[$i++];
 
-						if ($string[$i] == '\\' && $string[$i + 1] == "'") { $i++; }
-						if (! isset($string[$i]) || ($string[$i] == "'" && $string[$i - 1] !== '\\')) { $run = false; }
-					} while ($run);
-					break;
-
-				case '(':
-					$depth++;
-					break;
-
-				case ')':
-					$depth--;
-					break;
-
-				case ',':
-					// If $depth == true we are nested argument
-					if (! $depth) {
-						// Arguments is complete
-						if ($buffer !== '') {
-							$ret[] = $buffer;
-							$buffer = '';
+						// Is last char or starting question mark is escaped
+						if (! isset($string[$i]) || ($string[$i] == $char && $string[$i - 1] != '\\')) {
+							break;
 						}
-						continue 2;
+					} while (true);
+					break;
+
+				default:
+					if ($depth == 0) {
+						foreach ($split as $spliter) {
+							if (substr($string, $i, strlen($spliter)) == $spliter) {
+								$stack[] = $buffer;
+								if ($keepSplitter) { $stack[] = $spliter; }
+								$buffer = '';
+								$i = $i + (strlen($spliter) - 1);
+								continue 3;
+							}
+						}
 					}
 					break;
-
-				case ' ':
-					if (! $depth) { continue 2; }
-					break;
-
 			}
 
-			// Fill buffer
-			$buffer.= $string[$i];
+			$buffer.= $char;
 		}
 
-		// Add last argument
-		if ($buffer || $buffer === '0') {
-			$ret[] = $buffer;
+		if ($buffer !== '') {
+			$stack[] = $buffer;
+			$buffer = '';
 		}
 
-		return $ret;
-	}
-
-	/**
-	 * Execute function if fnName is in whitelist
-	 *
-	 * @param string $fnName
-	 * @param mixed ...$params
-	 * @return mixed|NULL
-	 */
-	private function evalFunction(string $fnName, ...$params) {
-		$ret = null;
-		// Allowed functions
-		$allowedFunctionNames = [
-			// Math
-			'round', 'rand', 'pow', 'floor', 'abs',
-
-			// Date time
-			'time', 'date', 'strtotime', 'strtodate',
-
-			// Array
-			'explode', 'implode', 'array_column',
-
-			// String
-			'trim', 'strlen', 'substr', 'strpos', 'strstr', 'sprintf', 'ucfirst', 'ucwords', 'strtoupper', 'strtolower', 'strip_tags', 'str_replace', 'urlencode', 'rawurlencode'
-		];
-
-		if (in_array($fnName, $allowedFunctionNames)) {
-			try {
-				switch ($fnName) {
-					case 'strtodate':
-						$ret = date($params[1] ?? 'Y-m-d H:i:s', strtotime($params[0]));
-						break;
-
-					case 'strlen':
-					case 'substr':
-					case 'strpos':
-					case 'strstr':
-					case 'strtolower':
-					case 'strtoupper':
-						$fnName = 'mb_'.$fnName;
-
-					default:
-						$ret = $fnName(...$params);
-						break;
-				}
-			} catch (\Exception $e) { $ret = null; }
-		}
-
-		return $ret;
+		return $stack;
 	}
 }
