@@ -126,7 +126,7 @@ All available function. More in [php.net](http://php.net "php.net")
 
 -   Date time
 
-    -   time, date, strtotime, strtodate\*
+    -   time, date, gmdate, strtotime, strtodate\*
 
 -   Array
 
@@ -150,6 +150,21 @@ Socpe data:
 -   '{{(1 + 2) * 3}}' -> '9'
 -   '{{(1.2 + 2,4) * float}}' -> '19.44'
 -   '{{fn.round((done / total)*100, 2)}} %' -> '9 %'
+
+## Conditions
+
+Syntax allow use inline condition with using logical and comparison operators.
+
+Socpe data:
+
+```php
+["success" => true, "ok" => "ok", "notOk" => "not ok" ]
+```
+
+-   '{{(success) ? ok : notOk)}}' -> 'ok'
+-   '{{(! success) ? ok : notOk)}}' -> 'not ok'
+-   '{{1 && (0 || success) ? ok : notOk)}}' -> 'ok'
+-   '{{1 > 0 && 1 < 1 ? ok : notOk)}}' -> 'not ok'
 
 ## Advanced
 

@@ -214,24 +214,24 @@ final class ReplaceTest extends TestCase {
         );
     }
 
-    public function testCompileTimeFunctionTimeDateStrtotimeStrtodate(): void {
+    public function testCompileTimeFunctionTimeDateGmdateStrtotimeStrtodate(): void {
         $compiled = (string) Replace::compile(
-            "Hi ({{fn.time()}}), {{fn.date('Y-m-d, H:i')}}, {{fn.strtotime('today')}}, {{fn.strtodate('today', fn.substr('Y-m-d,, H:i', 0))}}"
+            "Hi ({{fn.time()}}), {{fn.date('Y-m-d, H:i')}}, {{fn.gmdate('H:i:s', 64)}}, {{fn.strtotime('today')}}, {{fn.strtodate('today', fn.substr('Y-m-d,, H:i', 0))}}"
         );
 
         $this->assertEquals(
-            'Hi ('.time().'), '.date('Y-m-d, H:i').', '.strtotime('today').', '.date('Y-m-d,, H:i', strtotime('today')),
+            'Hi ('.time().'), '.date('Y-m-d, H:i').', '.gmdate('H:i:s', 64).', '.strtotime('today').', '.date('Y-m-d,, H:i', strtotime('today')),
             $compiled
         );
     }
 
     public function testCompileArithmeticOperators(): void {
         $compiled = (string) Replace::compile(
-            "Hi ({{1 + 3 + (3+3) +3 + (2 * (1+1) + (1+2)) * (3+3) * (3+5 * (3.5+4,5))+4* ( 1+2)+2}})"
+            "Hi {{4 444}} {{1--4}} {{-4+4--5*-3}} ({{1 + 3 + (3+3) +3 + (2 * (1+1) + (1+2)) * (3+3) * (3+5 * (3.5+4,5))+4* ( 1+2)+2}})"
         );
 
         $this->assertEquals(
-            'Hi (1833)',
+            'Hi 4 444 5 -15 (1833)',
             $compiled
         );
     }
@@ -243,7 +243,7 @@ final class ReplaceTest extends TestCase {
         );
 
         $this->assertEquals(
-            'Hi 3309.3333',
+            'Hi 3309.3333333333',
             $compiled
         );
     }
@@ -257,6 +257,73 @@ final class ReplaceTest extends TestCase {
 
         $this->assertEquals(
             'Hi 21.63 '.(time()+2).' 6.3, 30.3, 1.24, 1.24',
+            $compiled
+        );
+    }
+
+    public function testCompileCondition(): void {
+        $compiled = (string) Replace::compile(
+            'Hi {{condition ? a : b}} {{conditionFalse ? a : b}} {{condition ? (conditionFalse ? b : a) : b}} {{conditionFalse ? a : (condition ? b : a)}} '.
+            '({{(condition ? b : a) ? a : b}}) {{! condition ? "false" : \'O\\\'K\'}}',
+            ['condition' => true, 'conditionFalse' => false, 'a' => 'Ahoj' , 'b' => 'Hi']
+        );
+
+        $this->assertEquals(
+            'Hi Ahoj Hi Ahoj Hi (Ahoj) O\'K',
+            $compiled
+        );
+    }
+
+    public function testCompileConditionWithLogicOperators(): void {
+        $compiled = (string) Replace::compile(
+            'Hi {{(conditionFalse || condition) ? ok : notOk}} {{(conditionFalse && condition) ? notOk : ok}} {{((2 && (0 || 1)) && 1) ? ok : notOk}}',
+            ['condition' => true, 'conditionFalse' => false, 'ok' => 'ok', 'notOk' => 'notOK']
+        );
+
+        $this->assertEquals(
+            'Hi ok ok ok',
+            $compiled
+        );
+    }
+
+    public function testCompileConditionWithComparisonOperators(): void {
+        $compiled = (string) Replace::compile(
+            '{{a === b ? ok : notOk}} {{( a !== c )? ok : notOk}} {{a == c ? ok : notOk}} {{a != d ? ok : notOk}} {{a <> d ? ok : notOk}} {{d >= a ? ok : notOk}} {{d <= 1 ? notOk : ok}} '.
+            '{{a > b ? notOk : ok}} {{a < 5 ? ok : notOk}}',
+            ['a' => 1 , 'b' => 1, 'c' => '1', 'd' => 2, 'ok' => 'ok', 'notOk' => 'notOK']
+        );
+
+        $this->assertEquals(
+            'ok ok ok ok ok ok ok ok ok',
+            $compiled
+        );
+    }
+
+    public function testCompileConditionWithErrorInConditionLogicComparison(): void {
+        $compiled = (string) Replace::compile(
+            'Hi {{condition ? a :}} {{(1 && ) ? a : b}} {{( 1 <= ) ? a : b}}',
+            ['condition' => true, 'conditionFalse' => false, 'a' => 'Ahoj' , 'b' => 'Hi']
+        );
+
+        $this->assertEquals(
+            'Hi   ',
+            $compiled
+        );
+    }
+
+    public function testCompileAllInOne(): void {
+        $compiled = (string) Replace::compile(
+            'Hi {{object.title}}, {{((1 && 2 && (0 || 1) ? (a >= 1+4*1) : false)) ? (fn.round((a / 22)*100, 1)) : \'error\\\'s\'}} {{\'error\\\'s\'}} {{"success\'s"}}',
+            [
+                'object' => [
+                    'title' => 'Jakub Miškech'
+                ],
+                'a' => 5,
+            ]
+        );
+
+        $this->assertEquals(
+            'Hi Jakub Miškech, 22.7 error\'s success\'s',
             $compiled
         );
     }
