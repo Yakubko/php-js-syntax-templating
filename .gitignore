@@ -1,4 +1,6 @@
 /vendor/
+/build/
+/.vscode/
 
 composer.phar
 composer.lock
