@@ -166,7 +166,7 @@ final class Replace implements \JsonSerializable {
 			return $this->runFunction($string, $subMatch);
 		}
 
-		// Is intenger or float
+		// Is integer or float
 		if (filter_var(str_replace(' ', '', $ret), FILTER_VALIDATE_INT) !== false || filter_var(str_replace(' ', '', $ret), FILTER_VALIDATE_FLOAT) !== false || filter_var(str_replace(' ', '', $ret), FILTER_VALIDATE_FLOAT,  ['options' => ['decimal' => ',']]) !== false) {
 			return $ret;
 		}
@@ -317,7 +317,7 @@ final class Replace implements \JsonSerializable {
 				'time', 'date', 'gmdate', 'strtotime', 'strtodate',
 
 				// Array
-				'explode', 'implode', 'array_column',
+				'explode', 'implode', 'array_column', 'array_push', 'array_merge',
 
 				// String
 				'trim', 'strlen', 'substr', 'strpos', 'strstr', 'sprintf', 'ucfirst', 'ucwords', 'strtoupper', 'strtolower', 'strip_tags', 'str_replace', 'urlencode', 'rawurlencode'
@@ -328,6 +328,11 @@ final class Replace implements \JsonSerializable {
 					switch ($subMatch[1]) {
 						case 'strtodate':
 							$ret = date($params[1] ?? 'Y-m-d H:i:s', strtotime($params[0]));
+							break;
+
+						case 'array_push':
+							array_push(...$params);
+							$ret = $params[0];
 							break;
 
 						case 'strlen':
@@ -479,12 +484,12 @@ final class Replace implements \JsonSerializable {
 
 				default:
 					if ($depth == 0) {
-						foreach ($split as $spliter) {
-							if (substr($string, $i, strlen($spliter)) == $spliter) {
+						foreach ($split as $splitter) {
+							if (substr($string, $i, strlen($splitter)) == $splitter) {
 								$stack[] = $buffer;
-								if ($keepSplitter) { $stack[] = $spliter; }
+								if ($keepSplitter) { $stack[] = $splitter; }
 								$buffer = '';
-								$i = $i + (strlen($spliter) - 1);
+								$i = $i + (strlen($splitter) - 1);
 								continue 3;
 							}
 						}

@@ -53,7 +53,7 @@ Available syntax examples
 
 #### String data
 
-Socpe data:
+Scope data:
 
 ```php
 ["name" => "Jakub Miškech"]
@@ -118,7 +118,7 @@ Scope data:
 
 ## Functions
 
-All available function. More in [php.net](http://php.net "php.net")
+All available function. More in [php.net](http://php.net 'php.net')
 
 -   Number
 
@@ -130,7 +130,7 @@ All available function. More in [php.net](http://php.net "php.net")
 
 -   Array
 
-    -   explode, implode, array_column
+    -   explode, implode, array_column, array_push, array_merge
 
 -   String
     -   trim, strlen, substr, strpos, strstr, sprintf, ucfirst, ucwords, strtoupper, strtolower, strip_tags, str_replace, urlencode, rawurlencode
@@ -139,7 +139,7 @@ All available function. More in [php.net](http://php.net "php.net")
 
 Arithmetic operators are used with numeric values to perform common arithmetical operations, such as addition, subtraction, multiplication and division.
 
-Socpe data:
+Scope data:
 
 ```php
 ["done" => 9, "total" => 100, "float" => "5.4" ]
@@ -155,7 +155,7 @@ Socpe data:
 
 Syntax allow use inline condition with using logical and comparison operators.
 
-Socpe data:
+Scope data:
 
 ```php
 ["success" => true, "ok" => "ok", "notOk" => "not ok" ]

@@ -201,7 +201,7 @@ final class ReplaceTest extends TestCase {
         );
     }
 
-    public function testCompileArrayFunctionExplodeImplodeArraycolumn(): void {
+    public function testCompileArrayFunctionExplodeImplodeArraycolumnArraypushArraymerge(): void {
         $compiled = (string) Replace::compile(
             "Hi ({{explode}}), {{fn.explode(',', explode)[1]}}, [{{fn.implode(', ', implode)}}], ".
             "{{fn.array_column(a_column, 'name')[1]}}",
@@ -211,6 +211,26 @@ final class ReplaceTest extends TestCase {
         $this->assertEquals(
             'Hi (a,b,c), b, [d, e, f], try',
             $compiled
+        );
+
+        $compiled = Replace::compile(
+            "{{fn.array_push(array, 'test', add)}}",
+            ['array' => ['a', 'b', 'c'], 'add' => ['yes', 'no']]
+        );
+
+        $this->assertEquals(
+            ['a', 'b', 'c', 'test', ['yes', 'no']],
+            $compiled->onlyOneParamValue
+        );
+
+        $compiled = Replace::compile(
+            "{{fn.array_merge(array, add)}}",
+            ['array' => ['a', 'b', 'c'], 'add' => ['yes', 'no']]
+        );
+
+        $this->assertEquals(
+            ['a', 'b', 'c', 'yes', 'no'],
+            $compiled->onlyOneParamValue
         );
     }
 
