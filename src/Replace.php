@@ -97,7 +97,7 @@ final class Replace implements \JsonSerializable {
 				$replacedValue = '';
 			}
 
-			if (($this->flags & static::USE_URLENCODE)) {
+			if (is_null($this->onlyOneParamValue) && ($this->flags & static::USE_URLENCODE)) {
 				$replacedValue = rawurlencode($replacedValue);
 			}
 

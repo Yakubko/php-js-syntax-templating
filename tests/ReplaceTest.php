@@ -50,10 +50,17 @@ final class ReplaceTest extends TestCase {
     }
 
     public function testCompileUseFlagUrlencode(): void {
-        $compiled = (string) Replace::compile('{{fullName}} a {{surName}}', ['fullName' => 'Jakub Miškech', 'surName' => 'Miškech'], Replace::USE_URLENCODE);
+        $compiled = [];
+        $compiled[] = (string) Replace::compile('{{fullName}} a {{surName}}', ['fullName' => 'Jakub Miškech', 'surName' => 'Miškech'], Replace::USE_URLENCODE);
+        $compiled[] = (string) Replace::compile('{{url}}', ['url' => 'https://test.com'], Replace::USE_URLENCODE);
+        $compiled[] = (string) Replace::compile('https://test.com?a={{url}}', ['url' => 'https://test.com'], Replace::USE_URLENCODE);
 
         $this->assertEquals(
-            'Jakub%20Mi%C5%A1kech a Mi%C5%A1kech',
+            [
+                'Jakub%20Mi%C5%A1kech a Mi%C5%A1kech',
+                'https://test.com',
+                'https://test.com?a=https%3A%2F%2Ftest.com'
+            ],
             $compiled
         );
     }
